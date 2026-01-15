@@ -48,7 +48,8 @@ void UART_Restart_Receive(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
-
+volatile uint32_t last_button_time = 0;  // Timestamp of last button press
+#define BUTTON_DEBOUNCE_DELAY  200        // 200ms debounce (adjust as needed)
 /* USER CODE BEGIN 0 */
 
 /* UART Receive Interrupt - FIXED & DEBUGGED */
@@ -93,10 +94,32 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == USER_Btn_Pin)
   {
-    led_state = !led_state;
-    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
-    Send_String("\r\n[BTN] LED toggled to ");
-    Send_String(led_state ? "ON\r\n> " : "OFF\r\n> ");
+
+	  uint32_t current_time = HAL_GetTick();  // Get current time in ms
+
+	  // ** DEBOUNCE LOGIC: Ignore interrupts within 200ms **
+	      if (current_time - last_button_time > BUTTON_DEBOUNCE_DELAY)
+	      {
+	        // Valid button press - process it
+	        led_state = !led_state;
+	        HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+	        Send_Status();
+
+	        // Update last press time
+	        last_button_time = current_time;
+	      }
+
+
+
+	      // Else: Ignore this interrupt (it's a bounce)
+
+	          // ** CRITICAL: Clear interrupt flag **
+	          __HAL_GPIO_EXTI_CLEAR_IT(USER_Btn_Pin);
+
+
+
+
+
   }
 }
 
