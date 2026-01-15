@@ -1,29 +1,32 @@
 /* USER CODE BEGIN Header */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dma.h"
 #include "usart.h"
 #include "gpio.h"
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
 
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
 
+/* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
 /* USER CODE END PTD */
-
+extern DMA_HandleTypeDef hdma_usart3_tx;
+/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
 /* USER CODE END PD */
 
+/* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
 
@@ -36,20 +39,20 @@ volatile uint8_t cmd_ready = 0;
 /* LED State */
 volatile uint8_t led_state = 0;
 
+/* BUTTON DEBOUNCE */
+volatile uint32_t last_button_time = 0;
+#define BUTTON_DEBOUNCE_DELAY  200
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void Process_Command(void);
-void Send_String(const char* str);
-void Send_Status(void);
-void UART_Restart_Receive(void);
-
+static void MPU_Config(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
-volatile uint32_t last_button_time = 0;  // Timestamp of last button press
-#define BUTTON_DEBOUNCE_DELAY  200        // 200ms debounce (adjust as needed)
+
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 /* UART Receive Interrupt - FIXED & DEBUGGED */
@@ -123,10 +126,31 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
   }
 }
 
-/* Send string via UART */
+
+/* DMA TX Transfer Complete Callback */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART3)
+  {
+    // Optional: Can add code here to signal TX complete
+    // Not needed for this application
+  }
+}
+
+/* DMA1 Stream3 Interrupt Handler */
+void DMA1_Stream3_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_usart3_tx);
+}
+
+/* Send string using DMA (NON-BLOCKING!) */
 void Send_String(const char* str)
 {
-  HAL_UART_Transmit(&huart3, (uint8_t*)str, strlen(str), 100);
+  // Wait if UART is busy with previous DMA transfer
+  while (huart3.gState != HAL_UART_STATE_READY);
+
+  // Start DMA transmission - returns immediately!
+  HAL_UART_Transmit_DMA(&huart3, (uint8_t*)str, strlen(str));
 }
 
 /* Send LED status */
@@ -199,6 +223,7 @@ void Process_Command(void)
   */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -224,8 +249,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART3_UART_Init();
-
   /* USER CODE BEGIN 2 */
 
   // ** CRITICAL: Start UART receive interrupt **
@@ -236,6 +261,8 @@ int main(void)
   Send_String("  Nucleo-F746ZG Control System\r\n");
   Send_String("========================================\r\n");
   Send_String("Type HELP and press ENTER\r\n> ");
+  Send_String("Button debounce: 200ms\r\n");
+  Send_String("DMA: Enabled for TX\r\n> ");
 
   // Flash LED to show system is alive
   HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
@@ -249,13 +276,14 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+	  // Process UART commands
+	      if (cmd_ready)
+	      {
+	        Process_Command();
+	      }
 
-    // Process UART commands
-    if (cmd_ready)
-    {
-      Process_Command();
-    }
-
+	      // CPU can sleep - DMA handles UART in background!
+	      __WFI();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -315,7 +343,8 @@ void SystemClock_Config(void)
 
 /* USER CODE END 4 */
 
-/* MPU Configuration */
+ /* MPU Configuration */
+
 void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -340,12 +369,13 @@ void MPU_Config(void)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
 }
 
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
- */
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -358,7 +388,6 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
