@@ -18,10 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "eth.h"
-#include "i2c.h"
-#include "usart.h"
-#include "usb_otg.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -59,7 +55,15 @@ static void MPU_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+// Interrupt handler callback
+volatile uint8_t button_pressed = 0;
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+  {
+    if (GPIO_Pin == USER_Btn_Pin)
+    {
+    	button_pressed = 1;  // Set flag
+    }
+  }
 /* USER CODE END 0 */
 
 /**
@@ -94,19 +98,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_ETH_Init();
-  MX_I2C1_Init();
-  MX_USART3_UART_Init();
-  MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
-  // Read initial button state (active low)
-    uint8_t last_button_state = HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin);
-    uint8_t led_state = 0;
 
-    // Turn off LED initially
-    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
-
-
+  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
+  uint32_t last_debounce_time = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -114,24 +109,18 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  // Read current button state
-	    uint8_t current_button_state = HAL_GPIO_ReadPin(USER_Btn_GPIO_Port, USER_Btn_Pin);
+	  if (button_pressed)
+	      {
+	        // Check debounce time
+	        if (HAL_GetTick() - last_debounce_time > 500)
+	        {
+	          HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+	          last_debounce_time = HAL_GetTick();
+	        }
+	        button_pressed = 0;  // Clear flag
+	      }
 
-	    // Check for button press (transition from high to low)
-	    if (last_button_state == GPIO_PIN_SET && current_button_state == GPIO_PIN_RESET)
-	    {
-	      // Toggle LED
-	      led_state = !led_state;
-	      HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
-
-	      // Simple debounce delay
-	      HAL_Delay(50);
-	    }
-
-	    last_button_state = current_button_state;
-
-	    // Small delay to avoid excessive polling
-	    HAL_Delay(10);
+	  __WFI();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -158,11 +147,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
   RCC_OscInitStruct.PLL.PLLN = 72;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 3;
