@@ -1,168 +1,172 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usart.h"
 #include "gpio.h"
 #include <stdio.h>
 #include <string.h>
-/* Private includes ----------------------------------------------------------*/
+#include <ctype.h>
+
 /* USER CODE BEGIN Includes */
-void Process_Command(void);
-void Send_Status(void);
-void Send_String(const char* str);
+
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
 /* USER CODE END PTD */
 
-/* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
 /* USER CODE END PD */
 
-/* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
 /* USER CODE END PM */
 
-/* Private variables ---------------------------------------------------------*/
-
 /* USER CODE BEGIN PV */
 
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
-/* Ring Buffer for UART */
-#define RX_BUFFER_SIZE  64
-volatile uint8_t rx_buffer[RX_BUFFER_SIZE];
-volatile uint16_t rx_write_pos = 0;
-volatile uint16_t rx_read_pos = 0;
-volatile uint8_t command_ready = 0;
+/* Command Buffer - SIMPLIFIED */
+#define CMD_BUFFER_SIZE  32
+volatile char cmd_buffer[CMD_BUFFER_SIZE];
+volatile uint8_t cmd_index = 0;
+volatile uint8_t cmd_ready = 0;
 
 /* LED State */
 volatile uint8_t led_state = 0;
 
-/* Function Prototypes */
+/* USER CODE END PV */
 
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+void Process_Command(void);
+void Send_String(const char* str);
+void Send_Status(void);
+void UART_Restart_Receive(void);
 
-/* UART Receive Interrupt Callback */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART3)
-  {
-    uint8_t rx_char = rx_buffer[rx_write_pos];
-
-    // Check for newline (command complete)
-    if (rx_char == '\r' || rx_char == '\n')
-    {
-      command_ready = 1;
-      rx_buffer[rx_write_pos] = '\0';  // Null-terminate string
-    }
-
-    // Advance write position
-    rx_write_pos = (rx_write_pos + 1) % RX_BUFFER_SIZE;
-
-    // Restart UART receive interrupt
-    HAL_UART_Receive_IT(&huart3, (uint8_t*)&rx_buffer[rx_write_pos], 1);
-  }
-}
-
-/* Button Interrupt Callback */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  if (GPIO_Pin == USER_Btn_Pin)
-  {
-    // Toggle LED state
-    led_state = !led_state;
-    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
-
-    // Send status update via UART
-    Send_Status();
-  }
-}
-
-/* Send string via UART */
-
-
-/* Send LED status to PuTTY */
-void Send_Status(void)
-{
-  char status_msg[64];
-  sprintf(status_msg, "\r\n[STATUS] LED is now %s\r\n> ", led_state ? "ON" : "OFF");
-  Send_String(status_msg);
-}
-
-/* Parse and execute command */
-void Process_Command(void)
-{
-  char cmd[32];
-  uint16_t i = 0;
-
-  // Copy command from ring buffer
-  while (rx_read_pos != rx_write_pos && i < 31)
-  {
-    cmd[i++] = rx_buffer[rx_read_pos];
-    rx_read_pos = (rx_read_pos + 1) % RX_BUFFER_SIZE;
-  }
-  cmd[i] = '\0';
-
-  // Parse command (case-insensitive)
-  if (strcasecmp(cmd, "ON") == 0)
-  {
-    led_state = 1;
-    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
-    Send_String("\r\nLED turned ON\r\n> ");
-  }
-  else if (strcasecmp(cmd, "OFF") == 0)
-  {
-    led_state = 0;
-    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
-    Send_String("\r\nLED turned OFF\r\n> ");
-  }
-  else if (strcasecmp(cmd, "STATUS") == 0)
-  {
-    Send_Status();
-  }
-  else if (strcasecmp(cmd, "HELP") == 0)
-  {
-    Send_String("\r\nAvailable commands:\r\n");
-    Send_String("  ON     - Turn LED ON\r\n");
-    Send_String("  OFF    - Turn LED OFF\r\n");
-    Send_String("  STATUS - Show LED status\r\n");
-    Send_String("  HELP   - Show this help\r\n");
-    Send_String("  Press USER button to toggle LED\r\n> ");
-  }
-  else if (strlen(cmd) > 0)
-  {
-    Send_String("\r\nUnknown command. Type HELP for available commands\r\n> ");
-  }
-}
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Interrupt handler callback
+
+/* UART Receive Interrupt - FIXED & DEBUGGED */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART3)
+  {
+    char rx_char = cmd_buffer[cmd_index];
+
+    // **ECHO CHARACTER BACK** - So you can see what you type!
+    HAL_UART_Transmit(&huart3, (uint8_t*)&rx_char, 1, 10);
+
+    // Check for Enter key (Carriage Return)
+    if (rx_char == '\r')
+    {
+      cmd_buffer[cmd_index] = '\0';  // Null-terminate string
+      cmd_ready = 1;                 // Mark command ready
+      Send_String("\r\n");           // New line
+    }
+    // Backspace handling
+    else if (rx_char == '\b' || rx_char == 127)
+    {
+      if (cmd_index > 0)
+      {
+        cmd_index--;
+        Send_String("\b \b");  // Erase character on screen
+      }
+    }
+    // Normal character
+    else if (cmd_index < CMD_BUFFER_SIZE - 1)
+    {
+      cmd_index++;
+    }
+
+    // **RESTART RECEIVE** for next character
+    UART_Restart_Receive();
+  }
+}
+
+/* Button Interrupt */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == USER_Btn_Pin)
+  {
+    led_state = !led_state;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+    Send_String("\r\n[BTN] LED toggled to ");
+    Send_String(led_state ? "ON\r\n> " : "OFF\r\n> ");
+  }
+}
+
+/* Send string via UART */
+void Send_String(const char* str)
+{
+  HAL_UART_Transmit(&huart3, (uint8_t*)str, strlen(str), 100);
+}
+
+/* Send LED status */
+void Send_Status(void)
+{
+  char status_msg[64];
+  sprintf(status_msg, "\r\n[STATUS] LED is %s\r\n> ", led_state ? "ON" : "OFF");
+  Send_String(status_msg);
+}
+
+/* Restart UART receive */
+void UART_Restart_Receive(void)
+{
+  HAL_UART_Receive_IT(&huart3, (uint8_t*)&cmd_buffer[cmd_index], 1);
+}
+
+/* Process command */
+void Process_Command(void)
+{
+  char cmd[32];
+  strcpy(cmd, (char*)cmd_buffer);  // Copy command
+
+  // Convert to uppercase
+  for(int i = 0; cmd[i]; i++) {
+    cmd[i] = toupper(cmd[i]);
+  }
+
+  if (strcmp(cmd, "ON") == 0)
+  {
+    led_state = 1;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+    Send_String("LED turned ON\r\n> ");
+  }
+  else if (strcmp(cmd, "OFF") == 0)
+  {
+    led_state = 0;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+    Send_String("LED turned OFF\r\n> ");
+  }
+  else if (strcmp(cmd, "STATUS") == 0)
+  {
+    Send_Status();
+  }
+  else if (strcmp(cmd, "HELP") == 0)
+  {
+    Send_String("\r\n--- Commands ---\r\n");
+    Send_String("ON     : Turn LED ON\r\n");
+    Send_String("OFF    : Turn LED OFF\r\n");
+    Send_String("STATUS : Show LED status\r\n");
+    Send_String("HELP   : Show this help\r\n");
+    Send_String("Press USER button to toggle LED\r\n> ");
+  }
+  else if (strlen(cmd) > 0)
+  {
+    Send_String("Unknown: ");
+    Send_String(cmd);
+    Send_String("\r\nType HELP for commands\r\n> ");
+  }
+
+  // Reset buffer
+  cmd_index = 0;
+  cmd_ready = 0;
+}
 
 /* USER CODE END 0 */
 
@@ -172,7 +176,6 @@ void Process_Command(void)
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -199,13 +202,22 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART3_UART_Init();
+
   /* USER CODE BEGIN 2 */
+
+  // ** CRITICAL: Start UART receive interrupt **
+  UART_Restart_Receive();
+
   // Send welcome message
-    Send_String("\r\n========================================\r\n");
-    Send_String("Nucleo-F746ZG Control System\r\n");
-    Send_String("Commands: ON, OFF, STATUS, HELP\r\n");
-    Send_String("Button: Press USER to toggle LED\r\n");
-    Send_String("========================================\r\n> ");
+  Send_String("\r\n\r\n========================================\r\n");
+  Send_String("  Nucleo-F746ZG Control System\r\n");
+  Send_String("========================================\r\n");
+  Send_String("Type HELP and press ENTER\r\n> ");
+
+  // Flash LED to show system is alive
+  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_SET);
+  HAL_Delay(200);
+  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
 
@@ -214,12 +226,13 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  // Process UART commands
-	      if (command_ready)
-	      {
-	        command_ready = 0;
-	        Process_Command();
-	      }
+
+    // Process UART commands
+    if (cmd_ready)
+    {
+      Process_Command();
+    }
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -276,14 +289,10 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void Send_String(const char* str)
-{
-  HAL_UART_Transmit(&huart3, (uint8_t*)str, strlen(str), 100);
-}
+
 /* USER CODE END 4 */
 
- /* MPU Configuration */
-
+/* MPU Configuration */
 void MPU_Config(void)
 {
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
@@ -308,23 +317,25 @@ void MPU_Config(void)
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
-
 }
 
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
-  */
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
+    // Blink LED fast to indicate error
+    HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
+    HAL_Delay(100);
   }
   /* USER CODE END Error_Handler_Debug */
 }
+
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
