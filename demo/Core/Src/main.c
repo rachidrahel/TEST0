@@ -18,11 +18,15 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usart.h"
 #include "gpio.h"
-
+#include <stdio.h>
+#include <string.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+void Process_Command(void);
+void Send_Status(void);
+void Send_String(const char* str);
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,8 +51,111 @@
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
-static void MPU_Config(void);
+/* Ring Buffer for UART */
+#define RX_BUFFER_SIZE  64
+volatile uint8_t rx_buffer[RX_BUFFER_SIZE];
+volatile uint16_t rx_write_pos = 0;
+volatile uint16_t rx_read_pos = 0;
+volatile uint8_t command_ready = 0;
+
+/* LED State */
+volatile uint8_t led_state = 0;
+
+/* Function Prototypes */
+
+
+/* UART Receive Interrupt Callback */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART3)
+  {
+    uint8_t rx_char = rx_buffer[rx_write_pos];
+
+    // Check for newline (command complete)
+    if (rx_char == '\r' || rx_char == '\n')
+    {
+      command_ready = 1;
+      rx_buffer[rx_write_pos] = '\0';  // Null-terminate string
+    }
+
+    // Advance write position
+    rx_write_pos = (rx_write_pos + 1) % RX_BUFFER_SIZE;
+
+    // Restart UART receive interrupt
+    HAL_UART_Receive_IT(&huart3, (uint8_t*)&rx_buffer[rx_write_pos], 1);
+  }
+}
+
+/* Button Interrupt Callback */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == USER_Btn_Pin)
+  {
+    // Toggle LED state
+    led_state = !led_state;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+
+    // Send status update via UART
+    Send_Status();
+  }
+}
+
+/* Send string via UART */
+
+
+/* Send LED status to PuTTY */
+void Send_Status(void)
+{
+  char status_msg[64];
+  sprintf(status_msg, "\r\n[STATUS] LED is now %s\r\n> ", led_state ? "ON" : "OFF");
+  Send_String(status_msg);
+}
+
+/* Parse and execute command */
+void Process_Command(void)
+{
+  char cmd[32];
+  uint16_t i = 0;
+
+  // Copy command from ring buffer
+  while (rx_read_pos != rx_write_pos && i < 31)
+  {
+    cmd[i++] = rx_buffer[rx_read_pos];
+    rx_read_pos = (rx_read_pos + 1) % RX_BUFFER_SIZE;
+  }
+  cmd[i] = '\0';
+
+  // Parse command (case-insensitive)
+  if (strcasecmp(cmd, "ON") == 0)
+  {
+    led_state = 1;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+    Send_String("\r\nLED turned ON\r\n> ");
+  }
+  else if (strcasecmp(cmd, "OFF") == 0)
+  {
+    led_state = 0;
+    HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, led_state);
+    Send_String("\r\nLED turned OFF\r\n> ");
+  }
+  else if (strcasecmp(cmd, "STATUS") == 0)
+  {
+    Send_Status();
+  }
+  else if (strcasecmp(cmd, "HELP") == 0)
+  {
+    Send_String("\r\nAvailable commands:\r\n");
+    Send_String("  ON     - Turn LED ON\r\n");
+    Send_String("  OFF    - Turn LED OFF\r\n");
+    Send_String("  STATUS - Show LED status\r\n");
+    Send_String("  HELP   - Show this help\r\n");
+    Send_String("  Press USER button to toggle LED\r\n> ");
+  }
+  else if (strlen(cmd) > 0)
+  {
+    Send_String("\r\nUnknown command. Type HELP for available commands\r\n> ");
+  }
+}
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -56,14 +163,7 @@ static void MPU_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 // Interrupt handler callback
-volatile uint8_t button_pressed = 0;
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-  {
-    if (GPIO_Pin == USER_Btn_Pin)
-    {
-    	button_pressed = 1;  // Set flag
-    }
-  }
+
 /* USER CODE END 0 */
 
 /**
@@ -98,10 +198,15 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
+  // Send welcome message
+    Send_String("\r\n========================================\r\n");
+    Send_String("Nucleo-F746ZG Control System\r\n");
+    Send_String("Commands: ON, OFF, STATUS, HELP\r\n");
+    Send_String("Button: Press USER to toggle LED\r\n");
+    Send_String("========================================\r\n> ");
 
-  HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
-  uint32_t last_debounce_time = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -109,18 +214,12 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  if (button_pressed)
+	  // Process UART commands
+	      if (command_ready)
 	      {
-	        // Check debounce time
-	        if (HAL_GetTick() - last_debounce_time > 500)
-	        {
-	          HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
-	          last_debounce_time = HAL_GetTick();
-	        }
-	        button_pressed = 0;  // Clear flag
+	        command_ready = 0;
+	        Process_Command();
 	      }
-
-	  __WFI();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -177,7 +276,10 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void Send_String(const char* str)
+{
+  HAL_UART_Transmit(&huart3, (uint8_t*)str, strlen(str), 100);
+}
 /* USER CODE END 4 */
 
  /* MPU Configuration */
